@@ -20,7 +20,7 @@ through the HTTP API, just like a real explorer talks to a real node.
       chain validation, tests
 - [x] **Phase 2 — transactions** (Rust): ed25519 keys, transaction
       signing/verification, mempool, coinbase reward, balances (account model)
-- [ ] **Phase 3 — HTTP API** (Rust, axum): `GET /blocks`, `GET /balance/:addr`,
+- [x] **Phase 3 — HTTP API** (Rust, axum): `GET /blocks`, `GET /balance/:addr`,
       `POST /tx`, `POST /mine`
 - [ ] **Phase 4 — explorer** (Go): polling the node, in-memory/SQLite cache,
       REST + a simple HTML page with block list and search
@@ -31,6 +31,27 @@ through the HTTP API, just like a real explorer talks to a real node.
 ## Running
 
 ```sh
-cd node && cargo run       # mine a demo chain
-cd node && cargo test      # core tests
+cd node && cargo run       # start the node (PORT=3000, DIFFICULTY=4 by default)
+cd node && cargo test      # core + API tests
 ```
+
+## Node HTTP API
+
+| Method | Path                | Description                                      |
+|--------|---------------------|--------------------------------------------------|
+| GET    | `/blocks`           | full chain                                       |
+| GET    | `/mempool`          | pending transactions                             |
+| GET    | `/balance/{addr}`   | confirmed balance of an address                  |
+| GET    | `/nonce/{addr}`     | next expected nonce (fetch before signing a tx)  |
+| POST   | `/tx`               | submit a signed transaction (JSON body)          |
+| POST   | `/mine`             | mine the mempool: `{"miner": "<address>"}`       |
+
+```sh
+curl localhost:3000/blocks
+curl -X POST localhost:3000/mine \
+  -H 'content-type: application/json' -d '{"miner":"<address>"}'
+curl localhost:3000/balance/<address>
+```
+
+The node never sees private keys: clients fetch the nonce, sign locally,
+and submit the ready-made transaction to `/tx`.

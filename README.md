@@ -22,8 +22,8 @@ through the HTTP API, just like a real explorer talks to a real node.
       signing/verification, mempool, coinbase reward, balances (account model)
 - [x] **Phase 3 — HTTP API** (Rust, axum): `GET /blocks`, `GET /balance/:addr`,
       `POST /tx`, `POST /mine`
-- [ ] **Phase 4 — explorer** (Go): polling the node, in-memory/SQLite cache,
-      REST + a simple HTML page with block list and search
+- [x] **Phase 4 — explorer** (Go): polling the node, in-memory cache,
+      REST + HTML pages with block list, address history and search
 - [ ] **Phase 5 — wallet** (Go, cobra): `wallet keygen | balance | send`
 - [ ] **Phase 6 — network** (Rust, libp2p): multiple nodes, block gossip,
       fork resolution via the longest-chain rule
@@ -33,6 +33,29 @@ through the HTTP API, just like a real explorer talks to a real node.
 ```sh
 cd node && cargo run       # start the node (PORT=3000, DIFFICULTY=4 by default)
 cd node && cargo test      # core + API tests
+
+cd explorer && go run ./cmd/explorer  # start the explorer (PORT=8080, NODE_URL=http://localhost:3000)
+cd explorer && go test ./...          # explorer tests
+```
+
+Open http://localhost:8080 for the explorer UI: recent blocks, block and
+address pages, search by block index, hash or address. JSON mirror at
+`/api/blocks`, `/api/blocks/{ref}`, `/api/address/{addr}`.
+
+The explorer follows hexagonal architecture (ports & adapters):
+
+```
+explorer/
+├── cmd/explorer/            composition root — the only place that wires adapters
+└── internal/
+    ├── core/                the hexagon: no imports of adapters or net/http
+    │   ├── domain/          Block, Transaction, pure balance arithmetic
+    │   ├── port/            driven ports: ChainSource, ChainRepository
+    │   └── service/         Syncer (polling) and Explorer (queries)
+    └── adapter/
+        ├── nodeclient/      driven:  node HTTP API  → port.ChainSource
+        ├── memstore/        driven:  in-memory cache → port.ChainRepository
+        └── httpserver/      driving: HTML + JSON API → core
 ```
 
 ## Node HTTP API

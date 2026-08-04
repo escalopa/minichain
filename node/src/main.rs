@@ -21,7 +21,8 @@ fn main() {
     // Alice needs starting capital — she mines the first block.
     chain.mine_pending(&alice.address());
 
-    let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 15);
+    let nonce = chain.next_nonce(&alice.address());
+    let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 15, nonce);
     chain.submit_transaction(tx).expect("valid transfer");
     chain.mine_pending(&alice.address());
 

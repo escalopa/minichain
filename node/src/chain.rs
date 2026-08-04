@@ -24,9 +24,24 @@ impl Blockchain {
         self.blocks.last().expect("chain always has genesis")
     }
 
+    /// The sender's next expected nonce: the number of their transactions
+    /// in the chain plus the ones already pending in the mempool.
+    pub fn next_nonce(&self, address: &str) -> u64 {
+        let confirmed = self
+            .blocks
+            .iter()
+            .flat_map(|b| &b.transactions)
+            .filter(|tx| tx.from == address)
+            .count() as u64;
+        let pending = self.mempool.iter().filter(|tx| tx.from == address).count() as u64;
+        confirmed + pending
+    }
+
     /// Accepts a transaction into the mempool: the signature must be
-    /// valid and the sender's balance must cover the transfer, taking
-    /// into account what they already promised to spend in the mempool.
+    /// valid, the nonce must be exactly the next one in sequence
+    /// (replay protection), and the sender's balance must cover the
+    /// transfer, taking into account what they already promised to
+    /// spend in the mempool.
     pub fn submit_transaction(&mut self, tx: Transaction) -> Result<(), String> {
         if tx.is_coinbase() {
             return Err("coinbase transactions are created only by mining".into());
@@ -36,6 +51,14 @@ impl Blockchain {
         }
         if !tx.verify() {
             return Err("invalid signature".into());
+        }
+
+        let expected = self.next_nonce(&tx.from);
+        if tx.nonce != expected {
+            return Err(format!(
+                "bad nonce: expected {expected}, got {} (replay or gap)",
+                tx.nonce
+            ));
         }
 
         let pending_spend: u64 = self
@@ -110,10 +133,12 @@ impl Blockchain {
     }
 
     /// Full integrity check: hashes are correct, prev_hash links are
-    /// unbroken, PoW holds, all signatures are valid, and each block
-    /// has at most one coinbase transaction.
+    /// unbroken, PoW holds, all signatures are valid, each block has
+    /// at most one coinbase transaction, and every sender's nonces
+    /// grow strictly sequentially (0, 1, 2, ...) across the whole chain.
     pub fn is_valid(&self) -> bool {
         let target = "0".repeat(self.difficulty);
+        let mut nonces: HashMap<&str, u64> = HashMap::new();
         for (i, block) in self.blocks.iter().enumerate() {
             if block.hash != block.compute_hash() || !block.hash.starts_with(&target) {
                 return false;
@@ -129,8 +154,18 @@ impl Blockchain {
             if coinbase_count > 1 {
                 return false;
             }
-            if !block.transactions.iter().all(Transaction::verify) {
-                return false;
+            for tx in &block.transactions {
+                if !tx.verify() {
+                    return false;
+                }
+                if tx.is_coinbase() {
+                    continue;
+                }
+                let expected = nonces.entry(&tx.from).or_insert(0);
+                if tx.nonce != *expected {
+                    return false;
+                }
+                *expected += 1;
             }
         }
         true
@@ -168,7 +203,7 @@ mod tests {
         let bob = Wallet::generate();
 
         chain.mine_pending(&alice.address());
-        let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 20);
+        let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 20, 0);
         chain.submit_transaction(tx).unwrap();
         chain.mine_pending(&alice.address());
 
@@ -187,7 +222,7 @@ mod tests {
         let bob = Wallet::generate();
 
         chain.mine_pending(&alice.address());
-        let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 999);
+        let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 999, 0);
         assert!(chain.submit_transaction(tx).is_err());
     }
 
@@ -198,8 +233,8 @@ mod tests {
         let bob = Wallet::generate();
 
         chain.mine_pending(&alice.address());
-        let tx1 = Transaction::new_signed(alice.signing_key(), &bob.address(), 40);
-        let tx2 = Transaction::new_signed(alice.signing_key(), &bob.address(), 40);
+        let tx1 = Transaction::new_signed(alice.signing_key(), &bob.address(), 40, 0);
+        let tx2 = Transaction::new_signed(alice.signing_key(), &bob.address(), 40, 1);
         chain.submit_transaction(tx1).unwrap();
         assert!(chain.submit_transaction(tx2).is_err());
     }
@@ -208,9 +243,57 @@ mod tests {
     fn unsigned_transaction_is_rejected() {
         let mut chain = Blockchain::new(1);
         let alice = Wallet::generate();
-        let mut tx = Transaction::new_signed(alice.signing_key(), "bob-addr", 10);
+        let mut tx = Transaction::new_signed(alice.signing_key(), "bob-addr", 10, 0);
         tx.signature = String::new();
         assert!(chain.submit_transaction(tx).is_err());
+    }
+
+    #[test]
+    fn mined_transaction_cannot_be_replayed() {
+        let mut chain = Blockchain::new(1);
+        let alice = Wallet::generate();
+        let bob = Wallet::generate();
+
+        chain.mine_pending(&alice.address());
+        let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 10, 0);
+        chain.submit_transaction(tx.clone()).unwrap();
+        chain.mine_pending(&alice.address());
+
+        // The same signed transaction a second time: nonce 0 is already spent.
+        let err = chain.submit_transaction(tx).unwrap_err();
+        assert!(err.contains("bad nonce"));
+        assert_eq!(chain.balance_of(&bob.address()), 10);
+    }
+
+    #[test]
+    fn nonce_gap_is_rejected() {
+        let mut chain = Blockchain::new(1);
+        let alice = Wallet::generate();
+        let bob = Wallet::generate();
+
+        chain.mine_pending(&alice.address());
+        let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 10, 5);
+        assert!(chain.submit_transaction(tx).is_err());
+    }
+
+    #[test]
+    fn chain_with_replayed_transaction_is_invalid() {
+        let mut chain = Blockchain::new(1);
+        let alice = Wallet::generate();
+        let bob = Wallet::generate();
+
+        chain.mine_pending(&alice.address());
+        let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 10, 0);
+        chain.submit_transaction(tx.clone()).unwrap();
+        chain.mine_pending(&alice.address());
+
+        // An attacker manually mines a block with a copy of an already
+        // spent transaction: PoW and signature are valid, but the nonce
+        // repeats.
+        let prev_hash = chain.last_block().hash.clone();
+        let forged = Block::mine(2, prev_hash, vec![tx], chain.difficulty);
+        chain.blocks.push(forged);
+        assert!(!chain.is_valid());
     }
 
     #[test]

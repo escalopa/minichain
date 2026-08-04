@@ -1,16 +1,21 @@
+use std::collections::HashMap;
+
 use crate::block::Block;
+use crate::transaction::Transaction;
 
 pub struct Blockchain {
     pub blocks: Vec<Block>,
+    pub mempool: Vec<Transaction>,
     pub difficulty: usize,
 }
 
 impl Blockchain {
-    /// Новая цепочка всегда начинается с генезис-блока.
+    /// Новая цепочка всегда начинается с генезис-блока без транзакций.
     pub fn new(difficulty: usize) -> Self {
-        let genesis = Block::mine(0, "0".repeat(64), "genesis".into(), difficulty);
+        let genesis = Block::mine(0, "0".repeat(64), vec![], difficulty);
         Blockchain {
             blocks: vec![genesis],
+            mempool: Vec::new(),
             difficulty,
         }
     }
@@ -19,15 +24,93 @@ impl Blockchain {
         self.blocks.last().expect("chain always has genesis")
     }
 
-    pub fn add_block(&mut self, data: String) -> &Block {
+    /// Принимает транзакцию в мемпул: подпись должна быть валидной,
+    /// а баланс отправителя — покрывать перевод с учётом того,
+    /// что он уже пообещал потратить в мемпуле.
+    pub fn submit_transaction(&mut self, tx: Transaction) -> Result<(), String> {
+        if tx.is_coinbase() {
+            return Err("coinbase transactions are created only by mining".into());
+        }
+        if tx.amount == 0 {
+            return Err("amount must be positive".into());
+        }
+        if !tx.verify() {
+            return Err("invalid signature".into());
+        }
+
+        let pending_spend: u64 = self
+            .mempool
+            .iter()
+            .filter(|p| p.from == tx.from)
+            .map(|p| p.amount)
+            .sum();
+        let available = self.balance_of(&tx.from).saturating_sub(pending_spend);
+        if available < tx.amount {
+            return Err(format!(
+                "insufficient funds: available {available}, needed {}",
+                tx.amount
+            ));
+        }
+
+        self.mempool.push(tx);
+        Ok(())
+    }
+
+    /// Майнит блок из всего мемпула + coinbase-награды майнеру.
+    pub fn mine_pending(&mut self, miner: &str) -> &Block {
+        let mut transactions = vec![Transaction::coinbase(miner)];
+        transactions.append(&mut self.mempool);
+
         let prev = self.last_block();
-        let block = Block::mine(prev.index + 1, prev.hash.clone(), data, self.difficulty);
+        let block = Block::mine(
+            prev.index + 1,
+            prev.hash.clone(),
+            transactions,
+            self.difficulty,
+        );
         self.blocks.push(block);
         self.last_block()
     }
 
+    /// Баланс по account-модели: сумма входящих минус сумма исходящих
+    /// по всем блокам цепочки. Мемпул не учитывается — это ещё не деньги.
+    pub fn balance_of(&self, address: &str) -> u64 {
+        let mut balance: i128 = 0;
+        for block in &self.blocks {
+            for tx in &block.transactions {
+                if tx.to == address {
+                    balance += tx.amount as i128;
+                }
+                if tx.from == address {
+                    balance -= tx.amount as i128;
+                }
+            }
+        }
+        balance.max(0) as u64
+    }
+
+    /// Балансы всех адресов, встречавшихся в цепочке.
+    pub fn balances(&self) -> HashMap<String, u64> {
+        let mut addresses: Vec<&str> = Vec::new();
+        for block in &self.blocks {
+            for tx in &block.transactions {
+                addresses.push(&tx.to);
+                if !tx.is_coinbase() {
+                    addresses.push(&tx.from);
+                }
+            }
+        }
+        addresses.sort();
+        addresses.dedup();
+        addresses
+            .into_iter()
+            .map(|a| (a.to_string(), self.balance_of(a)))
+            .collect()
+    }
+
     /// Полная проверка целостности: хэши корректны, ссылки prev_hash
-    /// не разорваны, PoW соблюдён.
+    /// не разорваны, PoW соблюдён, все подписи валидны и в каждом
+    /// блоке не больше одной coinbase-транзакции.
     pub fn is_valid(&self) -> bool {
         let target = "0".repeat(self.difficulty);
         for (i, block) in self.blocks.iter().enumerate() {
@@ -35,6 +118,17 @@ impl Blockchain {
                 return false;
             }
             if i > 0 && block.prev_hash != self.blocks[i - 1].hash {
+                return false;
+            }
+            let coinbase_count = block
+                .transactions
+                .iter()
+                .filter(|tx| tx.is_coinbase())
+                .count();
+            if coinbase_count > 1 {
+                return false;
+            }
+            if !block.transactions.iter().all(Transaction::verify) {
                 return false;
             }
         }
@@ -45,6 +139,7 @@ impl Blockchain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wallet::Wallet;
 
     #[test]
     fn fresh_chain_is_valid() {
@@ -54,19 +149,82 @@ mod tests {
     }
 
     #[test]
-    fn chain_grows_and_stays_valid() {
-        let mut chain = Blockchain::new(2);
-        chain.add_block("tx: alice -> bob 10".into());
-        chain.add_block("tx: bob -> carol 5".into());
-        assert_eq!(chain.blocks.len(), 3);
+    fn mining_pays_block_reward() {
+        let mut chain = Blockchain::new(1);
+        let miner = Wallet::generate();
+        chain.mine_pending(&miner.address());
+        assert_eq!(
+            chain.balance_of(&miner.address()),
+            crate::transaction::BLOCK_REWARD
+        );
         assert!(chain.is_valid());
     }
 
     #[test]
-    fn tampered_chain_is_detected() {
+    fn transfer_moves_funds_between_wallets() {
         let mut chain = Blockchain::new(1);
-        chain.add_block("tx: alice -> bob 10".into());
-        chain.blocks[1].data = "tx: alice -> mallory 1000".into();
+        let alice = Wallet::generate();
+        let bob = Wallet::generate();
+
+        chain.mine_pending(&alice.address());
+        let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 20);
+        chain.submit_transaction(tx).unwrap();
+        chain.mine_pending(&alice.address());
+
+        assert_eq!(chain.balance_of(&bob.address()), 20);
+        assert_eq!(
+            chain.balance_of(&alice.address()),
+            2 * crate::transaction::BLOCK_REWARD - 20
+        );
+        assert!(chain.is_valid());
+    }
+
+    #[test]
+    fn overspend_is_rejected() {
+        let mut chain = Blockchain::new(1);
+        let alice = Wallet::generate();
+        let bob = Wallet::generate();
+
+        chain.mine_pending(&alice.address());
+        let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 999);
+        assert!(chain.submit_transaction(tx).is_err());
+    }
+
+    #[test]
+    fn double_spend_within_mempool_is_rejected() {
+        let mut chain = Blockchain::new(1);
+        let alice = Wallet::generate();
+        let bob = Wallet::generate();
+
+        chain.mine_pending(&alice.address());
+        let tx1 = Transaction::new_signed(alice.signing_key(), &bob.address(), 40);
+        let tx2 = Transaction::new_signed(alice.signing_key(), &bob.address(), 40);
+        chain.submit_transaction(tx1).unwrap();
+        assert!(chain.submit_transaction(tx2).is_err());
+    }
+
+    #[test]
+    fn unsigned_transaction_is_rejected() {
+        let mut chain = Blockchain::new(1);
+        let alice = Wallet::generate();
+        let mut tx = Transaction::new_signed(alice.signing_key(), "bob-addr", 10);
+        tx.signature = String::new();
+        assert!(chain.submit_transaction(tx).is_err());
+    }
+
+    #[test]
+    fn chain_with_forged_transaction_is_invalid() {
+        let mut chain = Blockchain::new(1);
+        let alice = Wallet::generate();
+        chain.mine_pending(&alice.address());
+
+        // Подделываем транзакцию прямо в блоке, пересчитав его хэш и PoW,
+        // но подпись подделать нельзя — is_valid это ловит.
+        let mut forged = Transaction::coinbase("mallory-addr");
+        forged.from = alice.address();
+        let prev_hash = chain.blocks[0].hash.clone();
+        let forged_block = Block::mine(1, prev_hash, vec![forged], chain.difficulty);
+        chain.blocks[1] = forged_block;
         assert!(!chain.is_valid());
     }
 }

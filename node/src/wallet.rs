@@ -1,7 +1,7 @@
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 
-/// Пара ключей ed25519. Адрес кошелька = hex публичного ключа.
+/// An ed25519 key pair. Wallet address = hex of the public key.
 pub struct Wallet {
     signing_key: SigningKey,
 }

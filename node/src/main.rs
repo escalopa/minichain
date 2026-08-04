@@ -18,7 +18,7 @@ fn main() {
 
     let mut chain = Blockchain::new(difficulty);
 
-    // Алисе нужен стартовый капитал — она майнит первый блок.
+    // Alice needs starting capital — she mines the first block.
     chain.mine_pending(&alice.address());
 
     let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 15);

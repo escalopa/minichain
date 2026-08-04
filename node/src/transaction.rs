@@ -3,15 +3,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::block::now_millis;
 
-/// Адрес отправителя coinbase-транзакции — награды майнеру.
-/// У неё нет реального отправителя и подписи.
+/// Sender address of a coinbase transaction — the miner's reward.
+/// It has no real sender and no signature.
 pub const COINBASE: &str = "COINBASE";
 
-/// Награда за смайненный блок.
+/// Reward for a mined block.
 pub const BLOCK_REWARD: u64 = 50;
 
-/// Перевод средств. Адрес — это hex-представление публичного ключа
-/// ed25519 (32 байта), подпись покрывает все поля, кроме неё самой.
+/// A transfer of funds. An address is the hex representation of an
+/// ed25519 public key (32 bytes); the signature covers every field
+/// except itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
     pub from: String,
@@ -22,7 +23,7 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    /// Создаёт перевод и сразу подписывает его ключом отправителя.
+    /// Creates a transfer and immediately signs it with the sender's key.
     pub fn new_signed(key: &SigningKey, to: &str, amount: u64) -> Self {
         let mut tx = Transaction {
             from: hex::encode(key.verifying_key().to_bytes()),
@@ -36,7 +37,7 @@ impl Transaction {
         tx
     }
 
-    /// Награда майнеру — единственная транзакция без подписи.
+    /// The miner's reward — the only transaction without a signature.
     pub fn coinbase(miner: &str) -> Self {
         Transaction {
             from: COINBASE.to_string(),
@@ -51,13 +52,13 @@ impl Transaction {
         self.from == COINBASE
     }
 
-    /// То, что подписывается: все поля, кроме самой подписи.
+    /// What gets signed: every field except the signature itself.
     fn payload(&self) -> String {
         format!("{}|{}|{}|{}", self.from, self.to, self.amount, self.timestamp)
     }
 
-    /// Проверяет подпись против публичного ключа из `from`.
-    /// Coinbase-транзакции считаются валидными без подписи.
+    /// Verifies the signature against the public key taken from `from`.
+    /// Coinbase transactions are considered valid without a signature.
     pub fn verify(&self) -> bool {
         if self.is_coinbase() {
             return self.amount == BLOCK_REWARD;

@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 use crate::transaction::Transaction;
 
-/// Один блок цепочки: заголовок + список транзакций.
+/// A single block in the chain: header + list of transactions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block {
     pub index: u64,
@@ -15,7 +15,7 @@ pub struct Block {
 }
 
 impl Block {
-    /// Создаёт блок и сразу майнит его под нужную сложность.
+    /// Creates a block and immediately mines it to the given difficulty.
     pub fn mine(
         index: u64,
         prev_hash: String,
@@ -32,8 +32,8 @@ impl Block {
             hash: String::new(),
         };
 
-        // Proof-of-Work: перебираем nonce, пока хэш не начнётся
-        // с `difficulty` нулей в hex-представлении.
+        // Proof-of-Work: iterate the nonce until the hash starts
+        // with `difficulty` zeros in its hex representation.
         let target = "0".repeat(difficulty);
         loop {
             block.hash = block.compute_hash();
@@ -44,8 +44,8 @@ impl Block {
         }
     }
 
-    /// Хэш считается по всем полям, КРОМЕ самого hash —
-    /// иначе получилась бы циклическая зависимость.
+    /// The hash covers every field EXCEPT the hash itself —
+    /// otherwise we would have a circular dependency.
     pub fn compute_hash(&self) -> String {
         let txs = serde_json::to_string(&self.transactions).expect("transactions serialize");
         let payload = format!(

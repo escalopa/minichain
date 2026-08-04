@@ -10,7 +10,7 @@ pub struct Blockchain {
 }
 
 impl Blockchain {
-    /// Новая цепочка всегда начинается с генезис-блока без транзакций.
+    /// A new chain always starts with a genesis block with no transactions.
     pub fn new(difficulty: usize) -> Self {
         let genesis = Block::mine(0, "0".repeat(64), vec![], difficulty);
         Blockchain {
@@ -24,9 +24,9 @@ impl Blockchain {
         self.blocks.last().expect("chain always has genesis")
     }
 
-    /// Принимает транзакцию в мемпул: подпись должна быть валидной,
-    /// а баланс отправителя — покрывать перевод с учётом того,
-    /// что он уже пообещал потратить в мемпуле.
+    /// Accepts a transaction into the mempool: the signature must be
+    /// valid and the sender's balance must cover the transfer, taking
+    /// into account what they already promised to spend in the mempool.
     pub fn submit_transaction(&mut self, tx: Transaction) -> Result<(), String> {
         if tx.is_coinbase() {
             return Err("coinbase transactions are created only by mining".into());
@@ -56,7 +56,8 @@ impl Blockchain {
         Ok(())
     }
 
-    /// Майнит блок из всего мемпула + coinbase-награды майнеру.
+    /// Mines a block out of the whole mempool + a coinbase reward
+    /// for the miner.
     pub fn mine_pending(&mut self, miner: &str) -> &Block {
         let mut transactions = vec![Transaction::coinbase(miner)];
         transactions.append(&mut self.mempool);
@@ -72,8 +73,8 @@ impl Blockchain {
         self.last_block()
     }
 
-    /// Баланс по account-модели: сумма входящих минус сумма исходящих
-    /// по всем блокам цепочки. Мемпул не учитывается — это ещё не деньги.
+    /// Account-model balance: incoming minus outgoing across all blocks
+    /// of the chain. The mempool is not counted — that is not money yet.
     pub fn balance_of(&self, address: &str) -> u64 {
         let mut balance: i128 = 0;
         for block in &self.blocks {
@@ -89,7 +90,7 @@ impl Blockchain {
         balance.max(0) as u64
     }
 
-    /// Балансы всех адресов, встречавшихся в цепочке.
+    /// Balances of every address ever seen in the chain.
     pub fn balances(&self) -> HashMap<String, u64> {
         let mut addresses: Vec<&str> = Vec::new();
         for block in &self.blocks {
@@ -108,9 +109,9 @@ impl Blockchain {
             .collect()
     }
 
-    /// Полная проверка целостности: хэши корректны, ссылки prev_hash
-    /// не разорваны, PoW соблюдён, все подписи валидны и в каждом
-    /// блоке не больше одной coinbase-транзакции.
+    /// Full integrity check: hashes are correct, prev_hash links are
+    /// unbroken, PoW holds, all signatures are valid, and each block
+    /// has at most one coinbase transaction.
     pub fn is_valid(&self) -> bool {
         let target = "0".repeat(self.difficulty);
         for (i, block) in self.blocks.iter().enumerate() {
@@ -218,8 +219,9 @@ mod tests {
         let alice = Wallet::generate();
         chain.mine_pending(&alice.address());
 
-        // Подделываем транзакцию прямо в блоке, пересчитав его хэш и PoW,
-        // но подпись подделать нельзя — is_valid это ловит.
+        // Forge a transaction directly inside a block, recomputing its
+        // hash and PoW — the signature cannot be forged, and is_valid
+        // catches that.
         let mut forged = Transaction::coinbase("mallory-addr");
         forged.from = alice.address();
         let prev_hash = chain.blocks[0].hash.clone();

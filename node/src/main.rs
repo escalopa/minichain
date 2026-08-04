@@ -1,38 +1,32 @@
+mod api;
 mod block;
 mod chain;
 mod transaction;
 mod wallet;
 
+use std::sync::{Arc, Mutex};
+
 use chain::Blockchain;
-use transaction::Transaction;
-use wallet::Wallet;
 
-fn main() {
-    let difficulty = 4;
-    println!("mining with difficulty {difficulty}...\n");
+#[tokio::main]
+async fn main() {
+    let difficulty: usize = env_or("DIFFICULTY", 4);
+    let port: u16 = env_or("PORT", 3000);
 
-    let alice = Wallet::generate();
-    let bob = Wallet::generate();
-    println!("alice: {}", alice.address());
-    println!("bob:   {}\n", bob.address());
+    let chain = Arc::new(Mutex::new(Blockchain::new(difficulty)));
+    let app = api::router(chain);
 
-    let mut chain = Blockchain::new(difficulty);
+    let addr = format!("0.0.0.0:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .expect("bind listener");
+    println!("minichain node listening on {addr} (difficulty {difficulty})");
+    axum::serve(listener, app).await.expect("server run");
+}
 
-    // Alice needs starting capital — she mines the first block.
-    chain.mine_pending(&alice.address());
-
-    let nonce = chain.next_nonce(&alice.address());
-    let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 15, nonce);
-    chain.submit_transaction(tx).expect("valid transfer");
-    chain.mine_pending(&alice.address());
-
-    for block in &chain.blocks {
-        println!("{}", serde_json::to_string_pretty(block).unwrap());
-    }
-
-    println!("\nbalances:");
-    for (address, balance) in chain.balances() {
-        println!("  {}..{} = {balance}", &address[..8], &address[56..]);
-    }
-    println!("\nchain valid: {}", chain.is_valid());
+fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }

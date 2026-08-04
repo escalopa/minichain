@@ -1,3 +1,5 @@
+// The composition root: the only place that knows about concrete
+// adapters and wires them into the core's ports.
 package main
 
 import (
@@ -8,23 +10,30 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/escalopa/minichain/explorer/internal/adapter/httpserver"
+	"github.com/escalopa/minichain/explorer/internal/adapter/memstore"
+	"github.com/escalopa/minichain/explorer/internal/adapter/nodeclient"
+	"github.com/escalopa/minichain/explorer/internal/core/service"
 )
 
 func main() {
 	nodeURL := envOr("NODE_URL", "http://localhost:3000")
 	port := envOr("PORT", "8080")
-	pollEvery := 2 * time.Second
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	store := NewStore()
-	client := NewNodeClient(nodeURL)
-	go poll(ctx, client, store, pollEvery)
+	repo := memstore.New()
+	source := nodeclient.New(nodeURL)
+	syncer := service.NewSyncer(source, repo, 2*time.Second)
+	explorer := service.NewExplorer(repo)
+
+	go syncer.Run(ctx)
 
 	server := &http.Server{
 		Addr:    ":" + port,
-		Handler: NewServer(store).Handler(),
+		Handler: httpserver.New(explorer).Handler(),
 	}
 	go func() {
 		<-ctx.Done()
@@ -36,31 +45,6 @@ func main() {
 	log.Printf("explorer listening on :%s, node at %s", port, nodeURL)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
-	}
-}
-
-// poll keeps the store in sync with the node. Fetching the whole chain
-// every tick is fine for an educational network; a real explorer would
-// track the tip and backfill.
-func poll(ctx context.Context, client *NodeClient, store *Store, every time.Duration) {
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
-
-	for {
-		blocks, err := client.Blocks(ctx)
-		switch {
-		case err != nil:
-			log.Printf("poll node: %v", err)
-		case len(blocks) != store.Height():
-			store.Update(blocks)
-			log.Printf("synced %d blocks", len(blocks))
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
 	}
 }
 

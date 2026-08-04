@@ -1,4 +1,6 @@
-package main
+// Package nodeclient is the driven adapter that implements
+// port.ChainSource over the node's HTTP API.
+package nodeclient
 
 import (
 	"context"
@@ -6,23 +8,24 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/escalopa/minichain/explorer/internal/core/domain"
 )
 
-// NodeClient is a thin HTTP client for the Rust node's API.
-type NodeClient struct {
+type Client struct {
 	baseURL string
 	http    *http.Client
 }
 
-func NewNodeClient(baseURL string) *NodeClient {
-	return &NodeClient{
+func New(baseURL string) *Client {
+	return &Client{
 		baseURL: baseURL,
 		http:    &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
 // Blocks fetches the full chain from the node.
-func (c *NodeClient) Blocks(ctx context.Context) ([]Block, error) {
+func (c *Client) Blocks(ctx context.Context) ([]domain.Block, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/blocks", nil)
 	if err != nil {
 		return nil, err
@@ -36,7 +39,7 @@ func (c *NodeClient) Blocks(ctx context.Context) ([]Block, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("node returned %s", resp.Status)
 	}
-	var blocks []Block
+	var blocks []domain.Block
 	if err := json.NewDecoder(resp.Body).Decode(&blocks); err != nil {
 		return nil, fmt.Errorf("decode blocks: %w", err)
 	}

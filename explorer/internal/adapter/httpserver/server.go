@@ -1,4 +1,7 @@
-package main
+// Package httpserver is the driving adapter: it translates HTTP
+// requests into calls on the core and renders the answers as JSON
+// or HTML.
+package httpserver
 
 import (
 	"encoding/json"
@@ -6,15 +9,25 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+
+	"github.com/escalopa/minichain/explorer/internal/core/domain"
 )
 
-// Server exposes the cached chain as JSON API + HTML pages.
-type Server struct {
-	store *Store
+// Explorer is the driving port: what this adapter needs from the core.
+// Defined on the consumer side, as Go interfaces should be.
+type Explorer interface {
+	Height() int
+	Recent(limit int) []domain.Block
+	Block(ref string) (domain.Block, bool)
+	Address(addr string) (uint64, []domain.TxRef)
 }
 
-func NewServer(store *Store) *Server {
-	return &Server{store: store}
+type Server struct {
+	explorer Explorer
+}
+
+func New(explorer Explorer) *Server {
+	return &Server{explorer: explorer}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -36,14 +49,14 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "index", map[string]any{
-		"Height": s.store.Height(),
-		"Blocks": s.store.Recent(25),
+		"Height": s.explorer.Height(),
+		"Blocks": s.explorer.Recent(25),
 	})
 }
 
 func (s *Server) handleBlock(w http.ResponseWriter, r *http.Request) {
 	ref := r.PathValue("ref")
-	block, ok := s.store.BlockByRef(ref)
+	block, ok := s.explorer.Block(ref)
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		s.render(w, "notfound", map[string]any{"Query": ref})
@@ -54,7 +67,7 @@ func (s *Server) handleBlock(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAddress(w http.ResponseWriter, r *http.Request) {
 	addr := r.PathValue("addr")
-	balance, history := s.store.AddressInfo(addr)
+	balance, history := s.explorer.Address(addr)
 	s.render(w, "address", map[string]any{
 		"Address": addr,
 		"Balance": balance,
@@ -66,7 +79,7 @@ func (s *Server) handleAddress(w http.ResponseWriter, r *http.Request) {
 // a known block (by index or hash) wins, anything else is an address.
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
-	if _, ok := s.store.BlockByRef(q); ok {
+	if _, ok := s.explorer.Block(q); ok {
 		http.Redirect(w, r, "/block/"+url.PathEscape(q), http.StatusFound)
 		return
 	}
@@ -83,13 +96,13 @@ func (s *Server) handleAPIBlocks(w http.ResponseWriter, r *http.Request) {
 		limit = v
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"height": s.store.Height(),
-		"blocks": s.store.Recent(limit),
+		"height": s.explorer.Height(),
+		"blocks": s.explorer.Recent(limit),
 	})
 }
 
 func (s *Server) handleAPIBlock(w http.ResponseWriter, r *http.Request) {
-	block, ok := s.store.BlockByRef(r.PathValue("ref"))
+	block, ok := s.explorer.Block(r.PathValue("ref"))
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "block not found"})
 		return
@@ -99,7 +112,7 @@ func (s *Server) handleAPIBlock(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAPIAddress(w http.ResponseWriter, r *http.Request) {
 	addr := r.PathValue("addr")
-	balance, history := s.store.AddressInfo(addr)
+	balance, history := s.explorer.Address(addr)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"address": addr,
 		"balance": balance,

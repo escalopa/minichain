@@ -1,4 +1,4 @@
-package main
+package httpserver
 
 import (
 	"encoding/json"
@@ -7,13 +7,36 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/escalopa/minichain/explorer/internal/adapter/memstore"
+	"github.com/escalopa/minichain/explorer/internal/core/domain"
+	"github.com/escalopa/minichain/explorer/internal/core/service"
 )
+
+func fixture() []domain.Block {
+	return []domain.Block{
+		{Index: 0, Hash: "aaa0"},
+		{
+			Index: 1, Hash: "aaa1", PrevHash: "aaa0",
+			Transactions: []domain.Transaction{
+				{From: domain.Coinbase, To: "alice", Amount: 50},
+			},
+		},
+		{
+			Index: 2, Hash: "aaa2", PrevHash: "aaa1",
+			Transactions: []domain.Transaction{
+				{From: domain.Coinbase, To: "alice", Amount: 50},
+				{From: "alice", To: "bob", Amount: 30, Nonce: 0},
+			},
+		},
+	}
+}
 
 func testServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	store := NewStore()
-	store.Update(chainFixture())
-	srv := httptest.NewServer(NewServer(store).Handler())
+	repo := memstore.New()
+	repo.Update(fixture())
+	srv := httptest.NewServer(New(service.NewExplorer(repo)).Handler())
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -56,7 +79,7 @@ func TestAPIBlockByRefAndNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var block Block
+	var block domain.Block
 	if err := json.NewDecoder(resp.Body).Decode(&block); err != nil {
 		t.Fatal(err)
 	}

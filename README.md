@@ -34,13 +34,29 @@ through the HTTP API, just like a real explorer talks to a real node.
 cd node && cargo run       # start the node (PORT=3000, DIFFICULTY=4 by default)
 cd node && cargo test      # core + API tests
 
-cd explorer && go run .    # start the explorer (PORT=8080, NODE_URL=http://localhost:3000)
-cd explorer && go test ./... # explorer tests
+cd explorer && go run ./cmd/explorer  # start the explorer (PORT=8080, NODE_URL=http://localhost:3000)
+cd explorer && go test ./...          # explorer tests
 ```
 
 Open http://localhost:8080 for the explorer UI: recent blocks, block and
 address pages, search by block index, hash or address. JSON mirror at
 `/api/blocks`, `/api/blocks/{ref}`, `/api/address/{addr}`.
+
+The explorer follows hexagonal architecture (ports & adapters):
+
+```
+explorer/
+├── cmd/explorer/            composition root — the only place that wires adapters
+└── internal/
+    ├── core/                the hexagon: no imports of adapters or net/http
+    │   ├── domain/          Block, Transaction, pure balance arithmetic
+    │   ├── port/            driven ports: ChainSource, ChainRepository
+    │   └── service/         Syncer (polling) and Explorer (queries)
+    └── adapter/
+        ├── nodeclient/      driven:  node HTTP API  → port.ChainSource
+        ├── memstore/        driven:  in-memory cache → port.ChainRepository
+        └── httpserver/      driving: HTML + JSON API → core
+```
 
 ## Node HTTP API
 

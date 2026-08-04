@@ -1,12 +1,6 @@
-mod api;
-mod block;
-mod chain;
-mod transaction;
-mod wallet;
-
 use std::sync::{Arc, Mutex};
 
-use chain::Blockchain;
+use minichain_node::{api, chain::Blockchain};
 
 #[tokio::main]
 async fn main() {

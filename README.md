@@ -25,7 +25,7 @@ through the HTTP API, just like a real explorer talks to a real node.
 - [x] **Phase 4 — explorer** (Go): polling the node, in-memory cache,
       REST + HTML pages with block list, address history and search
 - [x] **Phase 5 — wallet** (Go, cobra): `wallet keygen | address | balance | send | mine`
-- [ ] **Phase 6 — network** (Rust, libp2p): multiple nodes, block gossip,
+- [x] **Phase 6 — network** (Rust, libp2p): multiple nodes, chain gossip,
       fork resolution via the longest-chain rule
 
 ## Running
@@ -94,3 +94,24 @@ cd wallet && go build -o wallet ./cmd/wallet
 `--node` / `NODE_URL` selects the node, `--file` / `WALLET_FILE` the key
 file. Signing happens entirely client-side with Go's `crypto/ed25519`;
 the node (Rust, ed25519-dalek) verifies the same payload byte for byte.
+
+## Running a network
+
+Every node runs a libp2p swarm: gossipsub for exchanging chains, mDNS
+for discovering peers on the local network, plus explicit bootstrap
+peers via `PEERS` for when multicast is unavailable.
+
+```sh
+# terminal 1 — first node
+PORT=3901 P2P_PORT=4801 cargo run
+
+# terminal 2 — second node, bootstrapped from the first
+PORT=3902 P2P_PORT=4802 PEERS=/ip4/127.0.0.1/tcp/4801 cargo run
+```
+
+Mine on one node and watch the other adopt the chain within a couple
+of seconds. The consensus is deliberately naive Nakamoto: whenever a
+node's height grows it publishes its whole chain, and every node adopts
+any incoming chain that is valid and strictly longer than its own
+(`Blockchain::replace_if_longer`). Transactions already included in an
+adopted chain are pruned from the mempool.

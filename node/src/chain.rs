@@ -132,18 +132,48 @@ impl Blockchain {
             .collect()
     }
 
-    /// Full integrity check: hashes are correct, prev_hash links are
-    /// unbroken, PoW holds, all signatures are valid, each block has
-    /// at most one coinbase transaction, and every sender's nonces
-    /// grow strictly sequentially (0, 1, 2, ...) across the whole chain.
+    /// Full integrity check of this chain.
     pub fn is_valid(&self) -> bool {
-        let target = "0".repeat(self.difficulty);
+        Self::validate(&self.blocks, self.difficulty)
+    }
+
+    /// Longest-chain rule: adopt the candidate if it is valid and
+    /// strictly longer than ours. Transactions that the new chain
+    /// already includes are pruned from the mempool.
+    pub fn replace_if_longer(&mut self, candidate: Vec<Block>) -> bool {
+        if candidate.len() <= self.blocks.len() {
+            return false;
+        }
+        if !Self::validate(&candidate, self.difficulty) {
+            return false;
+        }
+
+        let included: std::collections::HashSet<(String, u64)> = candidate
+            .iter()
+            .flat_map(|b| &b.transactions)
+            .filter(|tx| !tx.is_coinbase())
+            .map(|tx| (tx.from.clone(), tx.nonce))
+            .collect();
+        self.mempool
+            .retain(|tx| !included.contains(&(tx.from.clone(), tx.nonce)));
+
+        self.blocks = candidate;
+        true
+    }
+
+    /// Validates an arbitrary chain: hashes are correct, prev_hash
+    /// links are unbroken, PoW holds, all signatures are valid, each
+    /// block has at most one coinbase transaction, and every sender's
+    /// nonces grow strictly sequentially (0, 1, 2, ...) across the
+    /// whole chain.
+    pub fn validate(blocks: &[Block], difficulty: usize) -> bool {
+        let target = "0".repeat(difficulty);
         let mut nonces: HashMap<&str, u64> = HashMap::new();
-        for (i, block) in self.blocks.iter().enumerate() {
+        for (i, block) in blocks.iter().enumerate() {
             if block.hash != block.compute_hash() || !block.hash.starts_with(&target) {
                 return false;
             }
-            if i > 0 && block.prev_hash != self.blocks[i - 1].hash {
+            if i > 0 && block.prev_hash != blocks[i - 1].hash {
                 return false;
             }
             let coinbase_count = block
@@ -274,6 +304,66 @@ mod tests {
         chain.mine_pending(&alice.address());
         let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 10, 5);
         assert!(chain.submit_transaction(tx).is_err());
+    }
+
+    #[test]
+    fn longer_valid_chain_is_adopted() {
+        let mut ours = Blockchain::new(1);
+        let mut theirs = Blockchain::new(1);
+        let miner = Wallet::generate();
+        theirs.mine_pending(&miner.address());
+        theirs.mine_pending(&miner.address());
+
+        assert!(ours.replace_if_longer(theirs.blocks.clone()));
+        assert_eq!(ours.blocks.len(), 3);
+        assert!(ours.is_valid());
+    }
+
+    #[test]
+    fn shorter_or_equal_chain_is_rejected() {
+        let mut ours = Blockchain::new(1);
+        let miner = Wallet::generate();
+        ours.mine_pending(&miner.address());
+
+        let equal = ours.blocks.clone();
+        assert!(!ours.replace_if_longer(equal));
+        assert!(!ours.replace_if_longer(vec![]));
+        assert_eq!(ours.blocks.len(), 2);
+    }
+
+    #[test]
+    fn longer_but_invalid_chain_is_rejected() {
+        let mut ours = Blockchain::new(1);
+        let mut theirs = Blockchain::new(1);
+        let miner = Wallet::generate();
+        theirs.mine_pending(&miner.address());
+        theirs.mine_pending(&miner.address());
+        theirs.blocks[1].transactions[0].amount = 9999; // break a hash
+
+        assert!(!ours.replace_if_longer(theirs.blocks.clone()));
+        assert_eq!(ours.blocks.len(), 1);
+    }
+
+    #[test]
+    fn adoption_prunes_included_mempool_transactions() {
+        let mut ours = Blockchain::new(1);
+        let alice = Wallet::generate();
+        let bob = Wallet::generate();
+        ours.mine_pending(&alice.address());
+        let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 10, 0);
+        ours.submit_transaction(tx.clone()).unwrap();
+
+        // The network mined a longer chain that already includes the tx.
+        let mut theirs = Blockchain {
+            blocks: ours.blocks.clone(),
+            mempool: vec![tx],
+            difficulty: 1,
+        };
+        theirs.mine_pending(&bob.address());
+        theirs.mine_pending(&bob.address());
+
+        assert!(ours.replace_if_longer(theirs.blocks.clone()));
+        assert!(ours.mempool.is_empty(), "included tx must leave the mempool");
     }
 
     #[test]

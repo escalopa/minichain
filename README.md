@@ -24,7 +24,7 @@ through the HTTP API, just like a real explorer talks to a real node.
       `POST /tx`, `POST /mine`
 - [x] **Phase 4 — explorer** (Go): polling the node, in-memory cache,
       REST + HTML pages with block list, address history and search
-- [ ] **Phase 5 — wallet** (Go, cobra): `wallet keygen | balance | send`
+- [x] **Phase 5 — wallet** (Go, cobra): `wallet keygen | address | balance | send | mine`
 - [ ] **Phase 6 — network** (Rust, libp2p): multiple nodes, block gossip,
       fork resolution via the longest-chain rule
 
@@ -78,3 +78,19 @@ curl localhost:3000/balance/<address>
 
 The node never sees private keys: clients fetch the nonce, sign locally,
 and submit the ready-made transaction to `/tx`.
+
+## Wallet
+
+```sh
+cd wallet && go build -o wallet ./cmd/wallet
+
+./wallet keygen                       # generate keys (~/.minichain/wallet.json, 0600)
+./wallet address                      # print your address
+./wallet mine                         # mine the mempool, take the 50-coin reward
+./wallet balance [address]            # your balance, or anyone's
+./wallet send --to <addr> --amount 15 # sign locally, submit to the node
+```
+
+`--node` / `NODE_URL` selects the node, `--file` / `WALLET_FILE` the key
+file. Signing happens entirely client-side with Go's `crypto/ed25519`;
+the node (Rust, ed25519-dalek) verifies the same payload byte for byte.

@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: node (rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: node
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test
+
+  go:
+    name: ${{ matrix.module }} (go)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [explorer, wallet]
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+      - name: Format
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+
+  e2e:
+    name: end-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: wallet/go.mod
+          cache-dependency-path: wallet/go.sum
+
+      - name: Build node and wallet
+        run: |
+          cargo build --release --manifest-path node/Cargo.toml
+          go build -C wallet -o "$GITHUB_WORKSPACE/bin/wallet" ./cmd/wallet
+
+      - name: Run the full transfer flow
+        env:
+          NODE_URL: http://localhost:3000
+        run: |
+          DIFFICULTY=3 ./node/target/release/minichain-node &
+          for _ in $(seq 1 30); do
+            curl -sf localhost:3000/blocks >/dev/null && break
+            sleep 1
+          done
+
+          bin/wallet keygen --file alice.json
+          bin/wallet keygen --file bob.json
+          BOB=$(bin/wallet address --file bob.json)
+
+          # Alice mines her starting capital, then pays Bob.
+          bin/wallet mine --file alice.json
+          bin/wallet send --file alice.json --to "$BOB" --amount 15
+          bin/wallet mine --file alice.json
+
+          alice_balance=$(bin/wallet balance --file alice.json | awk '/balance:/ {print $2}')
+          bob_balance=$(bin/wallet balance --file bob.json | awk '/balance:/ {print $2}')
+          echo "alice=$alice_balance bob=$bob_balance"
+          [ "$alice_balance" = "85" ] || { echo "expected alice to hold 85"; exit 1; }
+          [ "$bob_balance" = "15" ] || { echo "expected bob to hold 15"; exit 1; }
+
+          # An overspend must be rejected by the node.
+          if bin/wallet send --file bob.json --to "$BOB" --amount 999; then
+            echo "overspend should have been rejected"
+            exit 1
+          fi

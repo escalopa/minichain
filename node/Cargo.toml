@@ -12,6 +12,8 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
+libp2p = { version = "0.55", features = ["tokio", "tcp", "noise", "yamux", "gossipsub", "mdns", "macros"] }
+futures = "0.3"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

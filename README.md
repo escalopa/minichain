@@ -79,6 +79,17 @@ curl localhost:3000/balance/<address>
 The node never sees private keys: clients fetch the nonce, sign locally,
 and submit the ready-made transaction to `/tx`.
 
+### Concurrency model
+
+Chain state lives behind a single `Arc<Mutex<Blockchain>>`, so every
+operation is linearizable. Mining is **optimistic**: `POST /mine` takes
+a snapshot of the tip under a short lock, runs the proof-of-work on a
+blocking thread with no lock held, then re-takes the lock and appends —
+but only if the tip has not moved. If another miner (or an adopted
+longer chain from the network) won the race meanwhile, the block is
+discarded and mining restarts on the new tip. Reads and transaction
+submissions stay fast even while blocks are being mined.
+
 ## Wallet
 
 ```sh

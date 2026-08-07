@@ -89,8 +89,38 @@ async fn submit_tx(
         .map_err(|error| (StatusCode::BAD_REQUEST, Json(ErrorBody { error })))
 }
 
+/// Optimistic mining: take a snapshot of the tip under a short lock,
+/// run the PoW on a blocking thread with NO lock held (reads and
+/// submissions stay fast meanwhile), then re-take the lock and append.
+/// If the tip moved mid-mine — another miner or an adopted longer
+/// chain won the race — the block is discarded and mining restarts
+/// on top of the new tip.
 async fn mine(State(chain): State<SharedChain>, Json(body): Json<MineBody>) -> Json<Block> {
-    Json(chain.lock().unwrap().mine_pending(&body.miner).clone())
+    loop {
+        let (index, prev_hash, transactions, difficulty) = {
+            let c = chain.lock().unwrap();
+            let (index, prev_hash, transactions) = c.mining_job(&body.miner);
+            (index, prev_hash, transactions, c.difficulty)
+        };
+
+        let block = tokio::task::spawn_blocking(move || {
+            Block::mine(index, prev_hash, transactions, difficulty)
+        })
+        .await
+        .expect("mining task panicked");
+
+        let lost_at = {
+            let mut c = chain.lock().unwrap();
+            match c.try_append(block.clone()) {
+                Ok(()) => None,
+                Err(_) => Some(c.last_block().index),
+            }
+        };
+        match lost_at {
+            None => return Json(block),
+            Some(tip) => println!("mine: lost the race at height {tip}, remining"),
+        }
+    }
 }
 
 #[cfg(test)]

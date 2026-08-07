@@ -1,5 +1,7 @@
 # minichain
 
+[![CI](https://github.com/escalopa/minichain/actions/workflows/ci.yml/badge.svg)](https://github.com/escalopa/minichain/actions/workflows/ci.yml)
+
 An educational blockchain from scratch: **Rust** core, **Go** tooling.
 
 ## Architecture

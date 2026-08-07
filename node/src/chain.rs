@@ -441,7 +441,10 @@ mod tests {
         theirs.mine_pending(&bob.address());
 
         assert!(ours.replace_if_longer(theirs.blocks.clone()));
-        assert!(ours.mempool.is_empty(), "included tx must leave the mempool");
+        assert!(
+            ours.mempool.is_empty(),
+            "included tx must leave the mempool"
+        );
     }
 
     #[test]

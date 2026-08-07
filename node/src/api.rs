@@ -173,7 +173,10 @@ mod tests {
 
         let response = app
             .clone()
-            .oneshot(post_json("/mine", &serde_json::json!({"miner": miner.address()})))
+            .oneshot(post_json(
+                "/mine",
+                &serde_json::json!({"miner": miner.address()}),
+            ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -207,7 +210,10 @@ mod tests {
 
         // Alice mines a block to get funds.
         app.clone()
-            .oneshot(post_json("/mine", &serde_json::json!({"miner": alice.address()})))
+            .oneshot(post_json(
+                "/mine",
+                &serde_json::json!({"miner": alice.address()}),
+            ))
             .await
             .unwrap();
 
@@ -225,7 +231,10 @@ mod tests {
 
         // Someone mines the mempool; Bob's balance appears.
         app.clone()
-            .oneshot(post_json("/mine", &serde_json::json!({"miner": alice.address()})))
+            .oneshot(post_json(
+                "/mine",
+                &serde_json::json!({"miner": alice.address()}),
+            ))
             .await
             .unwrap();
         let response = app

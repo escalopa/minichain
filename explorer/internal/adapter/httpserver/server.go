@@ -15,6 +15,10 @@ import (
 
 // Explorer is the driving port: what this adapter needs from the core.
 // Defined on the consumer side, as Go interfaces should be.
+//
+// The concrete *service.Explorer satisfies it without knowing it
+// exists, so the core has no idea it is being served over HTTP — and
+// this package can be tested against a stub with four methods.
 type Explorer interface {
 	Height() int
 	Recent(limit int) []domain.Block
@@ -31,6 +35,10 @@ func New(explorer Explorer) *Server {
 }
 
 func (s *Server) Handler() http.Handler {
+	// Go 1.22+ method-and-wildcard patterns ("GET /block/{ref}") cover
+	// everything this service needs, so there is no router dependency.
+	// "GET /{$}" matches only the root — without the {$} anchor it
+	// would swallow every unmatched path.
 	mux := http.NewServeMux()
 
 	// HTML pages.
@@ -77,6 +85,10 @@ func (s *Server) handleAddress(w http.ResponseWriter, r *http.Request) {
 
 // handleSearch routes a free-form query to the right page:
 // a known block (by index or hash) wins, anything else is an address.
+//
+// Falling through to an address page even for gibberish is deliberate:
+// an address the chain has never seen is a legitimate query with the
+// legitimate answer "balance 0", so there is nothing to 404 on.
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	if _, ok := s.explorer.Block(q); ok {

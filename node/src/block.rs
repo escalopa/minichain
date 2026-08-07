@@ -4,11 +4,22 @@ use sha2::{Digest, Sha256};
 use crate::transaction::Transaction;
 
 /// A single block in the chain: header + list of transactions.
+///
+/// Immutability is not enforced by the type system — the fields are
+/// public and mutable — but by `hash`: change any field and the stored
+/// hash stops matching `compute_hash()`, which `Blockchain::validate`
+/// rejects. Tamper-evidence, not tamper-proofness, is what a chain of
+/// hashes actually buys you.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block {
     pub index: u64,
     pub timestamp: u64,
+    /// Hash of the previous block: the link that makes this a *chain*.
+    /// Rewriting block N invalidates every block after it, because each
+    /// one commits to its predecessor's hash.
     pub prev_hash: String,
+    /// The proof-of-work counter — the only field a miner is free to
+    /// grind, since everything else is fixed by the chain and mempool.
     pub nonce: u64,
     pub transactions: Vec<Transaction>,
     pub hash: String,
@@ -34,6 +45,12 @@ impl Block {
 
         // Proof-of-Work: iterate the nonce until the hash starts
         // with `difficulty` zeros in its hex representation.
+        //
+        // SHA-256 is unpredictable, so the only way to find such a
+        // hash is to try. Each extra zero divides the odds by 16, so
+        // the expected work grows exponentially with `difficulty` —
+        // that is the whole "cost" that makes rewriting history
+        // expensive. Verification, by contrast, is a single hash.
         let target = "0".repeat(difficulty);
         loop {
             block.hash = block.compute_hash();
@@ -46,6 +63,12 @@ impl Block {
 
     /// The hash covers every field EXCEPT the hash itself —
     /// otherwise we would have a circular dependency.
+    ///
+    /// Transactions enter the digest as their JSON encoding, so any
+    /// edit to any transaction changes the block hash. Real chains use
+    /// a Merkle root instead, which lets a light client prove that one
+    /// transaction is in a block without downloading all of them; here
+    /// the whole payload is small enough that hashing it flat is fine.
     pub fn compute_hash(&self) -> String {
         let txs = serde_json::to_string(&self.transactions).expect("transactions serialize");
         let payload = format!(

@@ -16,9 +16,14 @@ use libp2p::{gossipsub, mdns, noise, tcp, yamux, Multiaddr};
 use crate::api::SharedChain;
 use crate::block::Block;
 
+/// Composing two protocols into one behaviour: the derive macro
+/// generates a combined `BehaviourEvent` enum whose variants are the
+/// events of each field, which is what the `select!` arm below matches.
 #[derive(NetworkBehaviour)]
 struct Behaviour {
+    /// Publish/subscribe message routing — carries the chains.
     gossipsub: gossipsub::Behaviour,
+    /// Zero-config discovery of peers on the same LAN via multicast.
     mdns: mdns::tokio::Behaviour,
 }
 
@@ -63,12 +68,18 @@ pub async fn run(
     // Republish when our height exceeds what we last managed to
     // announce. Publishing fails while we have no peers — keeping
     // `announced` stale makes us retry once somebody shows up.
+    //
+    // Announcing on a timer rather than at the moment of mining keeps
+    // the p2p task decoupled from the HTTP handlers: they only ever
+    // touch the shared chain, and this loop notices the growth.
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     let mut announced = 0usize;
 
     loop {
         tokio::select! {
             _ = ticker.tick() => {
+                // Serialise under the lock, publish outside it: the
+                // gossip send must not block chain operations.
                 let (height, payload) = {
                     let c = chain.lock().unwrap();
                     (c.blocks.len(), serde_json::to_vec(&c.blocks).expect("chain serializes"))
@@ -95,6 +106,10 @@ pub async fn run(
                 SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message {
                     message, ..
                 })) => {
+                    // Undecodable gossip is ignored rather than fatal —
+                    // anyone can publish to a topic. `replace_if_longer`
+                    // then re-verifies every hash, signature and nonce
+                    // before anything is adopted: peers are untrusted.
                     if let Ok(blocks) = serde_json::from_slice::<Vec<Block>>(&message.data) {
                         let len = blocks.len();
                         if chain.lock().unwrap().replace_if_longer(blocks) {

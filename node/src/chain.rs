@@ -3,8 +3,17 @@ use std::collections::HashMap;
 use crate::block::Block;
 use crate::transaction::Transaction;
 
+/// The full state of one node: the chain it believes in, plus the
+/// transactions it has accepted but not yet mined.
+///
+/// Balances are *derived*, never stored — see `balance_of`. Keeping a
+/// single source of truth (the blocks) means there is no cached total
+/// that can silently drift out of sync with history.
 pub struct Blockchain {
     pub blocks: Vec<Block>,
+    /// Accepted-but-unmined transactions. Money here does not exist
+    /// yet: it counts against what the sender may still spend, but not
+    /// towards anyone's balance.
     pub mempool: Vec<Transaction>,
     pub difficulty: usize,
 }
@@ -26,6 +35,12 @@ impl Blockchain {
 
     /// The sender's next expected nonce: the number of their transactions
     /// in the chain plus the ones already pending in the mempool.
+    ///
+    /// Counting mempool entries too is what lets a client queue several
+    /// transfers back to back. The flip side: a pending transaction
+    /// that never gets mined blocks every later nonce from that sender
+    /// (head-of-line blocking). Real chains solve this with a replace-
+    /// by-fee mechanism; here nothing expires from the mempool.
     pub fn next_nonce(&self, address: &str) -> u64 {
         let confirmed = self
             .blocks
@@ -53,6 +68,11 @@ impl Blockchain {
             return Err("invalid signature".into());
         }
 
+        // Replay protection. The nonce is inside the signed payload, so
+        // a captured transaction cannot be re-broadcast: its nonce is
+        // spent the moment it lands in a block. Gaps are rejected too —
+        // accepting nonce 5 while 3 is missing would leave the mempool
+        // holding a transaction that can never become valid.
         let expected = self.next_nonce(&tx.from);
         if tx.nonce != expected {
             return Err(format!(
@@ -61,6 +81,11 @@ impl Blockchain {
             ));
         }
 
+        // Solvency is checked against confirmed balance *minus* what
+        // this sender already promised to spend in the mempool.
+        // Without subtracting the pending amount, two transfers of 40
+        // from a balance of 50 would both pass here and only blow up
+        // at mining time — the double-spend the mempool must prevent.
         let pending_spend: u64 = self
             .mempool
             .iter()
@@ -83,6 +108,11 @@ impl Blockchain {
     /// tip hash and the transactions to include (coinbase first).
     /// The caller mines OUTSIDE the chain lock and offers the result
     /// back via `try_append`.
+    ///
+    /// Splitting mining into "take a job" / "offer a solution" is what
+    /// keeps the node responsive: only these two short calls need the
+    /// lock, while the expensive hash grinding in between holds
+    /// nothing. See `api::mine` for the loop that ties them together.
     pub fn mining_job(&self, miner: &str) -> (u64, String, Vec<Transaction>) {
         let prev = self.last_block();
         let mut transactions = vec![Transaction::coinbase(miner)];
@@ -96,9 +126,16 @@ impl Blockchain {
     /// leave the mempool. On `Err` the miner lost the race and should
     /// take a fresh job.
     pub fn try_append(&mut self, block: Block) -> Result<(), String> {
+        // The compare-and-swap of this design: if the tip is not the
+        // one the job was cut from, someone else won the race and this
+        // block is stale — it would either fork the chain or duplicate
+        // rewards. Comparing hashes, not heights, also catches the case
+        // where the chain was replaced wholesale by a network peer.
         if block.prev_hash != self.last_block().hash {
             return Err("tip moved while mining".into());
         }
+        // Validate on a copy so a bad block leaves `self` untouched:
+        // state is only mutated once the full chain is known good.
         let mut candidate = self.blocks.clone();
         candidate.push(block);
         if !Self::validate(&candidate, self.difficulty) {
@@ -122,7 +159,17 @@ impl Blockchain {
 
     /// Account-model balance: incoming minus outgoing across all blocks
     /// of the chain. The mempool is not counted — that is not money yet.
+    ///
+    /// Bitcoin instead tracks unspent outputs (UTXO); the account model
+    /// used here (as in Ethereum) is simpler to reason about and pairs
+    /// naturally with per-sender nonces. The cost is that every query
+    /// replays the entire chain — fine at this scale, and it keeps the
+    /// invariant "the blocks are the only truth" honest.
     pub fn balance_of(&self, address: &str) -> u64 {
+        // Accumulate in i128: a malformed chain could momentarily send
+        // more than it received, and unsigned arithmetic would panic on
+        // overflow (debug) or wrap to a huge number (release) instead
+        // of simply clamping to zero at the end.
         let mut balance: i128 = 0;
         for block in &self.blocks {
             for tx in &block.transactions {
@@ -164,7 +211,17 @@ impl Blockchain {
     /// Longest-chain rule: adopt the candidate if it is valid and
     /// strictly longer than ours. Transactions that the new chain
     /// already includes are pruned from the mempool.
+    ///
+    /// This is Nakamoto consensus in one function: nobody votes and
+    /// nobody is in charge — each node independently prefers the chain
+    /// carrying the most proof-of-work, so honest nodes converge on the
+    /// same history. (Length stands in for work only because difficulty
+    /// is fixed here; with variable difficulty you must compare summed
+    /// work instead, or a flood of easy blocks would win.)
     pub fn replace_if_longer(&mut self, candidate: Vec<Block>) -> bool {
+        // *Strictly* longer: on an equal-length fork we keep what we
+        // have. Ties must not cause a swap, or two peers would flip
+        // back and forth forever, each adopting the other's chain.
         if candidate.len() <= self.blocks.len() {
             return false;
         }
@@ -178,6 +235,12 @@ impl Blockchain {
     }
 
     /// Drops mempool transactions that the given blocks already include.
+    ///
+    /// Identity is `(sender, nonce)` rather than the signature: the same
+    /// logical transfer signed twice would carry different timestamps
+    /// and signatures, yet only one of them can ever be valid. Without
+    /// this pruning a mined transaction would sit in the mempool
+    /// forever, since its nonce can never be accepted again.
     fn prune_mempool(&mut self, blocks: &[Block]) {
         let included: std::collections::HashSet<(String, u64)> = blocks
             .iter()
@@ -194,8 +257,16 @@ impl Blockchain {
     /// block has at most one coinbase transaction, and every sender's
     /// nonces grow strictly sequentially (0, 1, 2, ...) across the
     /// whole chain.
+    ///
+    /// An associated function, not a method, precisely so it can judge
+    /// a *foreign* chain — one arriving from a peer — before we decide
+    /// whether to adopt it. Trust nothing that comes off the network.
     pub fn validate(blocks: &[Block], difficulty: usize) -> bool {
         let target = "0".repeat(difficulty);
+        // Replaying nonces per sender across the whole chain is what
+        // makes a *mined* replay detectable: an attacker can produce a
+        // block with valid PoW containing a copy of someone's earlier
+        // transfer, but the duplicated nonce breaks this sequence.
         let mut nonces: HashMap<&str, u64> = HashMap::new();
         for (i, block) in blocks.iter().enumerate() {
             if block.hash != block.compute_hash() || !block.hash.starts_with(&target) {
@@ -204,6 +275,8 @@ impl Blockchain {
             if i > 0 && block.prev_hash != blocks[i - 1].hash {
                 return false;
             }
+            // At most one reward per block — otherwise a miner could
+            // simply pay themselves ten times for the same work.
             let coinbase_count = block
                 .transactions
                 .iter()

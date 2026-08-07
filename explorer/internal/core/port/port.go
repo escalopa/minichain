@@ -1,6 +1,16 @@
 // Package port defines the driven ports of the hexagon: interfaces
 // the core needs the outside world to implement. The core depends on
 // these abstractions, never on concrete adapters.
+//
+// This is dependency inversion in practice: without it, the syncer
+// would import the HTTP client, and testing it would mean standing up
+// a fake server. With it, a struct with three fields is enough.
+//
+// Note the asymmetry with the *driving* side: the HTTP adapter
+// declares the interface it consumes next to its own code
+// (`httpserver.Explorer`), which is the idiomatic Go convention —
+// interfaces belong to the consumer. Driven ports live here because
+// the consumer in that direction is the core itself.
 package port
 
 import (

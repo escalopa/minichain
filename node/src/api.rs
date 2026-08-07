@@ -14,6 +14,17 @@ use crate::transaction::Transaction;
 
 /// The chain is shared between request handlers. A std Mutex is enough
 /// here: we never hold the lock across an await point.
+///
+/// Two consequences worth knowing:
+///
+/// * Every operation on the chain is serialised, so the API is
+///   linearizable — concurrent mines and submissions interleave in
+///   some single global order, never partially.
+/// * `std::sync::Mutex` blocks the OS thread. That is correct only
+///   because no guard outlives an `.await`; holding one across a
+///   suspension point could deadlock the runtime. The expensive
+///   proof-of-work therefore runs on a blocking thread with the lock
+///   released — see `mine`.
 pub type SharedChain = Arc<Mutex<Blockchain>>;
 
 #[derive(Serialize)]
@@ -67,6 +78,11 @@ async fn get_balance(
 
 /// Clients call this before signing: the transaction they build must
 /// carry exactly this nonce to be accepted.
+///
+/// Inherently racy, and that is fine: between this call and `/tx`
+/// another transfer from the same sender may claim the nonce, and the
+/// submission is then rejected with a clear message. Ethereum behaves
+/// the same way — the client, not the node, owns the retry.
 async fn get_nonce(
     State(chain): State<SharedChain>,
     Path(address): Path<String>,
@@ -76,7 +92,12 @@ async fn get_nonce(
 }
 
 /// Accepts an already-signed transaction. The node never sees private
-/// keys — signing happens client-side (in the Go wallet later).
+/// keys — signing happens client-side (in the Go wallet).
+///
+/// This is why the wallet can be written in another language and why
+/// a node can be a stranger: it validates authority, it never holds
+/// it. Rejections come back as 400 with the node's own reason, so the
+/// wallet can print something actionable instead of "request failed".
 async fn submit_tx(
     State(chain): State<SharedChain>,
     Json(tx): Json<Transaction>,
@@ -97,18 +118,25 @@ async fn submit_tx(
 /// on top of the new tip.
 async fn mine(State(chain): State<SharedChain>, Json(body): Json<MineBody>) -> Json<Block> {
     loop {
+        // Scoped block: the guard is dropped at the closing brace, so
+        // the lock is definitely released before the mining starts.
         let (index, prev_hash, transactions, difficulty) = {
             let c = chain.lock().unwrap();
             let (index, prev_hash, transactions) = c.mining_job(&body.miner);
             (index, prev_hash, transactions, c.difficulty)
         };
 
+        // PoW is CPU-bound and unbounded in time; running it directly
+        // on a runtime worker would starve every other request on that
+        // thread. `spawn_blocking` moves it to the blocking pool.
         let block = tokio::task::spawn_blocking(move || {
             Block::mine(index, prev_hash, transactions, difficulty)
         })
         .await
         .expect("mining task panicked");
 
+        // The result is computed inside the scope but acted on outside
+        // it, so the lock is not held while we log or return.
         let lost_at = {
             let mut c = chain.lock().unwrap();
             match c.try_append(block.clone()) {
@@ -116,6 +144,11 @@ async fn mine(State(chain): State<SharedChain>, Json(body): Json<MineBody>) -> J
                 Err(_) => Some(c.last_block().index),
             }
         };
+        // Losing the race is normal, not an error: the work is thrown
+        // away and we start over on the new tip, exactly as a real
+        // miner does when a competitor's block arrives first. The loop
+        // is unbounded — acceptable at this scale, but under permanent
+        // contention a slow miner could in principle starve.
         match lost_at {
             None => return Json(block),
             Some(tip) => println!("mine: lost the race at height {tip}, remining"),

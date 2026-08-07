@@ -79,20 +79,44 @@ impl Blockchain {
         Ok(())
     }
 
-    /// Mines a block out of the whole mempool + a coinbase reward
-    /// for the miner.
-    pub fn mine_pending(&mut self, miner: &str) -> &Block {
-        let mut transactions = vec![Transaction::coinbase(miner)];
-        transactions.append(&mut self.mempool);
-
+    /// A snapshot for optimistic mining: the next index, the current
+    /// tip hash and the transactions to include (coinbase first).
+    /// The caller mines OUTSIDE the chain lock and offers the result
+    /// back via `try_append`.
+    pub fn mining_job(&self, miner: &str) -> (u64, String, Vec<Transaction>) {
         let prev = self.last_block();
-        let block = Block::mine(
-            prev.index + 1,
-            prev.hash.clone(),
-            transactions,
-            self.difficulty,
-        );
-        self.blocks.push(block);
+        let mut transactions = vec![Transaction::coinbase(miner)];
+        transactions.extend(self.mempool.iter().cloned());
+        (prev.index + 1, prev.hash.clone(), transactions)
+    }
+
+    /// Appends an externally mined block — but only if the tip has not
+    /// moved since the mining job was taken and the resulting chain is
+    /// fully valid. On success, transactions included in the block
+    /// leave the mempool. On `Err` the miner lost the race and should
+    /// take a fresh job.
+    pub fn try_append(&mut self, block: Block) -> Result<(), String> {
+        if block.prev_hash != self.last_block().hash {
+            return Err("tip moved while mining".into());
+        }
+        let mut candidate = self.blocks.clone();
+        candidate.push(block);
+        if !Self::validate(&candidate, self.difficulty) {
+            return Err("mined block does not validate".into());
+        }
+        self.prune_mempool(&candidate[candidate.len() - 1..]);
+        self.blocks = candidate;
+        Ok(())
+    }
+
+    /// Mines a block out of the whole mempool + a coinbase reward for
+    /// the miner. Synchronous convenience built on the same primitives
+    /// the optimistic path uses.
+    pub fn mine_pending(&mut self, miner: &str) -> &Block {
+        let (index, prev_hash, transactions) = self.mining_job(miner);
+        let block = Block::mine(index, prev_hash, transactions, self.difficulty);
+        self.try_append(block)
+            .expect("tip cannot move while we hold exclusive access");
         self.last_block()
     }
 
@@ -148,7 +172,14 @@ impl Blockchain {
             return false;
         }
 
-        let included: std::collections::HashSet<(String, u64)> = candidate
+        self.prune_mempool(&candidate);
+        self.blocks = candidate;
+        true
+    }
+
+    /// Drops mempool transactions that the given blocks already include.
+    fn prune_mempool(&mut self, blocks: &[Block]) {
+        let included: std::collections::HashSet<(String, u64)> = blocks
             .iter()
             .flat_map(|b| &b.transactions)
             .filter(|tx| !tx.is_coinbase())
@@ -156,9 +187,6 @@ impl Blockchain {
             .collect();
         self.mempool
             .retain(|tx| !included.contains(&(tx.from.clone(), tx.nonce)));
-
-        self.blocks = candidate;
-        true
     }
 
     /// Validates an arbitrary chain: hashes are correct, prev_hash
@@ -304,6 +332,56 @@ mod tests {
         chain.mine_pending(&alice.address());
         let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 10, 5);
         assert!(chain.submit_transaction(tx).is_err());
+    }
+
+    #[test]
+    fn optimistic_mining_appends_on_stable_tip() {
+        let mut chain = Blockchain::new(1);
+        let miner = Wallet::generate();
+
+        let (index, prev_hash, txs) = chain.mining_job(&miner.address());
+        let block = Block::mine(index, prev_hash, txs, chain.difficulty);
+        assert!(chain.try_append(block).is_ok());
+        assert_eq!(chain.blocks.len(), 2);
+        assert!(chain.is_valid());
+        assert_eq!(
+            chain.balance_of(&miner.address()),
+            crate::transaction::BLOCK_REWARD
+        );
+    }
+
+    #[test]
+    fn optimistic_miner_loses_race_when_tip_moves() {
+        let mut chain = Blockchain::new(1);
+        let slow = Wallet::generate();
+        let fast = Wallet::generate();
+
+        // The slow miner takes a job...
+        let (index, prev_hash, txs) = chain.mining_job(&slow.address());
+        // ...but the fast miner lands a block first.
+        chain.mine_pending(&fast.address());
+
+        let stale = Block::mine(index, prev_hash, txs, chain.difficulty);
+        assert!(chain.try_append(stale).is_err());
+        assert_eq!(chain.blocks.len(), 2, "stale block must not be appended");
+        assert_eq!(chain.balance_of(&slow.address()), 0);
+    }
+
+    #[test]
+    fn try_append_prunes_included_transactions() {
+        let mut chain = Blockchain::new(1);
+        let alice = Wallet::generate();
+        let bob = Wallet::generate();
+        chain.mine_pending(&alice.address());
+        let tx = Transaction::new_signed(alice.signing_key(), &bob.address(), 10, 0);
+        chain.submit_transaction(tx).unwrap();
+
+        let (index, prev_hash, txs) = chain.mining_job(&alice.address());
+        assert_eq!(txs.len(), 2, "coinbase + pending transfer");
+        let block = Block::mine(index, prev_hash, txs, chain.difficulty);
+        assert!(chain.try_append(block).is_ok());
+        assert!(chain.mempool.is_empty());
+        assert_eq!(chain.balance_of(&bob.address()), 10);
     }
 
     #[test]

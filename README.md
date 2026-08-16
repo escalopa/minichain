@@ -44,6 +44,30 @@ Open http://localhost:8080 for the explorer UI: recent blocks, block and
 address pages, search by block index, hash or address. JSON mirror at
 `/api/blocks`, `/api/blocks/{ref}`, `/api/address/{addr}`.
 
+## Docker
+
+Run the node and explorer without installing Rust or Go locally:
+
+```sh
+docker compose up --build
+```
+
+The node API is available at `http://localhost:3000`, the explorer at
+`http://localhost:8080`, and the P2P listener is mapped to port `4001`.
+Each application also has an independent Dockerfile in its own directory.
+
+The wallet is a command-line tool, so Compose keeps it as an opt-in profile.
+Use it against the node started above; mount a local directory to retain its
+key file between runs:
+
+```sh
+mkdir -p .minichain
+docker compose run --rm -v "$PWD/.minichain:/wallet" wallet \
+  keygen --file /wallet/alice.json
+docker compose run --rm -v "$PWD/.minichain:/wallet" wallet \
+  mine --file /wallet/alice.json
+```
+
 The explorer follows hexagonal architecture (ports & adapters):
 
 ```

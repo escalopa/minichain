@@ -4,6 +4,16 @@
 
 An educational blockchain from scratch: **Rust** core, **Go** tooling.
 
+## Preview
+
+Live explorer screenshot and an illustrative transaction-flow preview:
+
+![Live explorer](assets/explorer-live.png)
+
+![Transaction flow preview](assets/transaction-flow.png)
+
+[Watch the short preview video](assets/minichain-preview.mp4).
+
 ## Architecture
 
 ```
@@ -50,6 +60,28 @@ Run the node and explorer without installing Rust or Go locally:
 
 ```sh
 docker compose up --build
+```
+
+### Prebuilt images
+
+Versioned images are published to GitHub Container Registry on each `v*.*.*`
+tag. Version `v0.1.0` is available as `0.1.0`, `0.1`, `0`, and `latest`:
+
+```sh
+docker pull ghcr.io/escalopa/minichain-node:0.1.0
+docker pull ghcr.io/escalopa/minichain-explorer:0.1.0
+docker pull ghcr.io/escalopa/minichain-wallet:0.1.0
+```
+
+Start the services from the published images:
+
+```sh
+docker network create minichain
+docker run -d --name minichain-node --network minichain -p 3000:3000 -p 4001:4001 \
+  ghcr.io/escalopa/minichain-node:0.1.0
+docker run -d --name minichain-explorer --network minichain -p 8080:8080 \
+  -e NODE_URL=http://minichain-node:3000 \
+  ghcr.io/escalopa/minichain-explorer:0.1.0
 ```
 
 The node API is available at `http://localhost:3000`, the explorer at

@@ -20,7 +20,10 @@ type Client struct {
 func New(baseURL string) *Client {
 	return &Client{
 		baseURL: baseURL,
-		http:    &http.Client{Timeout: 10 * time.Second},
+		// Never use http.DefaultClient for outbound calls: it has no
+		// timeout, so a node that accepts the connection and then goes
+		// quiet would hang the syncer goroutine forever.
+		http: &http.Client{Timeout: 10 * time.Second},
 	}
 }
 

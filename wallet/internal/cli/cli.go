@@ -27,6 +27,10 @@ func New() *cobra.Command {
 	root.PersistentFlags().StringVar(&nodeURL, "node", envOr("NODE_URL", "http://localhost:3000"), "node base URL")
 	root.PersistentFlags().StringVar(&walletFile, "file", envOr("WALLET_FILE", defaultWalletPath()), "wallet file path")
 
+	// Constructed lazily inside closures, not up front: persistent
+	// flags are only parsed when a command actually runs, so building
+	// the client here would capture the default URL. Loading the
+	// wallet lazily also means `--help` works without a key file.
 	client := func() *nodeclient.Client { return nodeclient.New(nodeURL) }
 	wallet := func() (*keystore.Wallet, error) { return keystore.Load(walletFile) }
 
@@ -35,6 +39,9 @@ func New() *cobra.Command {
 		Use:   "keygen",
 		Short: "generate a key pair and save it to the wallet file",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Overwriting a wallet destroys the only copy of the seed
+			// and therefore the coins. Refusing by default is the
+			// single most important safety check in this binary.
 			if _, err := os.Stat(walletFile); err == nil && !force {
 				return fmt.Errorf("%s already exists; use --force to overwrite", walletFile)
 			}
@@ -92,6 +99,12 @@ func New() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// The three steps that make this a real wallet:
+			//   1. ask the node which nonce it expects next,
+			//   2. build and sign the transaction locally,
+			//   3. hand over only the signed result.
+			// The private key never crosses the process boundary, so
+			// the node can be someone else's machine entirely.
 			c := client()
 			nonce, err := c.Nonce(cmd.Context(), w.Address())
 			if err != nil {
@@ -104,10 +117,15 @@ func New() *cobra.Command {
 				Nonce:     nonce,
 				Timestamp: uint64(time.Now().UnixMilli()),
 			}
+			// Sign last: Payload() reads every other field, so the
+			// signature must be computed once they are all final.
 			t.Signature = w.Sign(t.Payload())
 			if err := c.Submit(cmd.Context(), t); err != nil {
 				return err
 			}
+			// OutOrStdout, not cmd.Printf: cobra's Print* helpers write
+			// to stderr, which silently broke `ADDR=$(wallet address)`
+			// in shell pipelines until an end-to-end run caught it.
 			fmt.Fprintf(cmd.OutOrStdout(), "accepted into mempool: %d -> %s (nonce %d)\n", amount, short(to), nonce)
 			fmt.Fprintln(cmd.OutOrStdout(), "run `wallet mine` to include it in a block")
 			return nil

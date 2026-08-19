@@ -5,6 +5,11 @@ use crate::block::now_millis;
 
 /// Sender address of a coinbase transaction — the miner's reward.
 /// It has no real sender and no signature.
+///
+/// This is the only way new coins enter the system: money is created
+/// out of nothing, exactly once per block, and paid to whoever did the
+/// proof-of-work. Note the sentinel is not valid hex, so it can never
+/// collide with a real address (which is always 64 hex chars).
 pub const COINBASE: &str = "COINBASE";
 
 /// Reward for a mined block.
@@ -13,6 +18,12 @@ pub const BLOCK_REWARD: u64 = 50;
 /// A transfer of funds. An address is the hex representation of an
 /// ed25519 public key (32 bytes); the signature covers every field
 /// except itself.
+///
+/// Because the address *is* the public key, there is no account
+/// registry to look anything up in: a transaction carries everything
+/// needed to verify it. "Creating an account" is just generating a
+/// key pair offline — the chain learns about you the first time you
+/// appear in a block.
 ///
 /// `nonce` is the sender's sequential transaction number (0, 1, 2, ...).
 /// It is part of the signed payload, so an already-mined transaction
@@ -61,6 +72,15 @@ impl Transaction {
     }
 
     /// What gets signed: every field except the signature itself.
+    ///
+    /// This exact string is a cross-language contract: the Go wallet
+    /// builds the same bytes in `wallet/internal/tx.Payload()` before
+    /// signing. Change the field order or the separator here and every
+    /// signature produced by the wallet stops verifying — the pinned
+    /// test on both sides exists to make that break loudly.
+    ///
+    /// Private on purpose: nothing outside this type may decide what
+    /// "the signed bytes" are.
     fn payload(&self) -> String {
         format!(
             "{}|{}|{}|{}|{}",
@@ -70,10 +90,24 @@ impl Transaction {
 
     /// Verifies the signature against the public key taken from `from`.
     /// Coinbase transactions are considered valid without a signature.
+    ///
+    /// The sender field doubles as the verification key, so a forged
+    /// `from` cannot help an attacker: changing it means the signature
+    /// must verify under someone *else's* key, which requires their
+    /// private key. That is why `forged_sender_fails_verification`
+    /// passes without any extra check on our side.
     pub fn verify(&self) -> bool {
         if self.is_coinbase() {
+            // The amount check is load-bearing: without it anyone could
+            // append a self-paying "COINBASE" transaction for an
+            // arbitrary sum and it would sail through unsigned.
+            // (`Blockchain::validate` separately caps blocks at one.)
             return self.amount == BLOCK_REWARD;
         }
+        // Every malformed input below is treated as "invalid", never as
+        // an error to propagate: a peer feeding us garbage should get a
+        // rejected transaction, not a crashed node. `let ... else` keeps
+        // that as a flat list of guards instead of nested matches.
         let Ok(key_bytes) = hex::decode(&self.from) else {
             return false;
         };

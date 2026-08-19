@@ -47,6 +47,9 @@ func (c *Client) Nonce(ctx context.Context, addr string) (uint64, error) {
 }
 
 // Submit sends a signed transaction to the node's mempool.
+//
+// The transaction arrives here already signed; this package moves
+// bytes and never touches keys.
 func (c *Client) Submit(ctx context.Context, t *tx.Transaction) error {
 	resp, err := c.postJSON(ctx, "/tx", t)
 	if err != nil {
@@ -55,6 +58,11 @@ func (c *Client) Submit(ctx context.Context, t *tx.Transaction) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
+		// Surface the node's own reason ("insufficient funds:
+		// available 15, needed 999", "bad nonce: ...") rather than a
+		// bare status code — it is the difference between a user
+		// fixing their command and filing a bug. Falls back to the
+		// status if the body is not the expected error shape.
 		var out struct {
 			Error string `json:"error"`
 		}

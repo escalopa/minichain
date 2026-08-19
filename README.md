@@ -6,9 +6,9 @@ An educational blockchain from scratch: **Rust** core, **Go** tooling.
 
 ## Preview
 
-Illustrative explorer and transaction-flow previews:
+Live explorer screenshot and an illustrative transaction-flow preview:
 
-![Explorer preview](assets/explorer-preview.png)
+![Live explorer](assets/explorer-live.png)
 
 ![Transaction flow preview](assets/transaction-flow.png)
 

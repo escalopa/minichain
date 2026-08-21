@@ -4,6 +4,31 @@
 
 An educational blockchain from scratch: **Rust** core, **Go** tooling.
 
+> **Project status — complete educational prototype.** All planned features are
+> implemented and covered by automated checks. It is intended for learning and
+> local experimentation, not for operating a production blockchain or holding
+> real value.
+
+## Quick start
+
+The fastest way to run the full stack is Docker Compose:
+
+```sh
+docker compose up --build
+```
+
+Open the explorer at http://localhost:8080. Add a few local demo blocks, then
+refresh the page to see the explorer update:
+
+```sh
+curl -X POST http://localhost:3000/mine \
+  -H 'content-type: application/json' \
+  -d '{"miner":"demo-miner"}'
+```
+
+The node API is available at http://localhost:3000; its full chain is at
+`GET /blocks`.
+
 ## Preview
 
 Live explorer screenshot and an illustrative transaction-flow preview:
@@ -62,10 +87,11 @@ Run the node and explorer without installing Rust or Go locally:
 docker compose up --build
 ```
 
-### Prebuilt images
+### Published images
 
 Versioned images are published to GitHub Container Registry on each `v*.*.*`
-tag. Version `v0.1.0` is available as `0.1.0`, `0.1`, `0`, and `latest`:
+tag. The current published release is `v0.1.0` (`0.1.0`, `0.1`, `0`, and
+`latest`):
 
 ```sh
 docker pull ghcr.io/escalopa/minichain-node:0.1.0
@@ -99,6 +125,19 @@ docker compose run --rm -v "$PWD/.minichain:/wallet" wallet \
 docker compose run --rm -v "$PWD/.minichain:/wallet" wallet \
   mine --file /wallet/alice.json
 ```
+
+## Testing
+
+Run all checks before changing the project:
+
+```sh
+cd node && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+cd explorer && go vet ./... && go test -race ./...
+cd wallet && go vet ./... && go test -race ./...
+```
+
+CI runs these module checks plus an end-to-end transfer flow on every pull
+request and push to `main`.
 
 The explorer follows hexagonal architecture (ports & adapters):
 
